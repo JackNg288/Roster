@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Roster Table with Shift Color Logic</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      font-size: 13px;
+      margin-top: 20px;
+    }
+
+    th, td {
+      border: 1px solid #ccc;
+      padding: 6px;
+      text-align: center;
+      white-space: nowrap;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+
+    th {
+      background-color: #f9f9f9;
+    }
+
+    td:first-child, th:first-child {
+      text-align: left;
+      background-color: #fff;
+      position: sticky;
+      left: 0;
+    }
+
+    th {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+    }
+
+    input[type="file"] {
+      margin: 10px 0;
+    }
+
+    tfoot td {
+      font-weight: bold;
+    }
+
+    @media print {
+      body {
+        margin: 0;
+      }
+      button, input {
+        display: none;
+      }
+      table {
+        page-break-inside: avoid;
+      }
+    }
+  </style>
+</head>
+<body>
+
+<h2>Shift Roster Table</h2>
+<p>Select your <strong>scheduler.xlsx</strong> file:</p>
+<input type="file" id="fileInput" accept=".xlsx">
+<button onclick="processFile()">Process</button>
+<button onclick="window.print()">Print Table as PDF</button>
+
+<div id="output"></div>
+
+<script>
+function convertExcelTime(excelTime) {
+  if (typeof excelTime !== 'number') return '';
+  const totalMinutes = Math.round(excelTime * 24 * 60);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
+}
+
+function formatDate(dateVal) {
+  let jsDate;
+  if (typeof dateVal === "number") {
+    jsDate = new Date(Math.round((dateVal - 25569) * 86400 * 1000));
+  } else {
+    jsDate = new Date(dateVal);
+  }
+  return jsDate.toLocaleDateString("en-GB", { day: '2-digit', month: 'short' });
+}
+
+function processFile() {
+  const input = document.getElementById('fileInput');
+  if (!input.files.length) {
+    alert("Please upload a .xlsx file.");
+    return;
+  }
+
+  const file = input.files[0];
+  const reader = new FileReader();
+
+  reader.onload = function(e) {
+    const data = new Uint8Array(e.target.result);
+    const workbook = XLSX.read(data, { type: 'array' });
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(sheet);
+
+    const nameKey = "Name";
+    const roleKey = "Job";
+    const dateKey = "Shift Start Date";
+    const startKey = "Shift Start Time";
+    const endKey = "Shift End Time";
+    const payCodeKey = "Pay Code";
+
+    const allDates = new Set();
+    const shiftMap = {};
+    const employeeRoles = {};
+
+    const leaveKeywords = ['leave', 'annual', 'long service', 'lsl', 'sick', 'additional', 'personal',
+      'unpaid', 'parental', 'carer', 'compassionate', 'bereavement', 'maternity', 'paternity'];
+
+    rows.forEach(row => {
+      const name = row[nameKey];
+      const dateObj = row[dateKey];
+      const startRaw = row[startKey];
+      const endRaw = row[endKey];
+      const role = row[roleKey] || "";
+      const payCode = (row[payCodeKey] || '').toString().toLowerCase();
+
+      if (!name || !dateObj) return;
+
+      const dateStr = formatDate(dateObj);
+      allDates.add(dateStr);
+      employeeRoles[name] = role;
+
+      const shiftStartText = (startRaw || '').toString().toLowerCase();
+      const shiftEndText = (endRaw || '').toString().toLowerCase();
+
+      const isLeave = leaveKeywords.some(keyword =>
+        payCode.includes(keyword) || shiftStartText.includes(keyword) || shiftEndText.includes(keyword)
+      );
+
+      let shiftLabel = '';
+      if (isLeave) {
+        shiftLabel = row[payCodeKey] || shiftStartText || shiftEndText || "Leave";
+      } else {
+        let start = typeof startRaw === 'number' ? convertExcelTime(startRaw) : (startRaw || '');
+        let end = typeof endRaw === 'number' ? convertExcelTime(endRaw) : (endRaw || '');
+        if (start && end) shiftLabel = `${start} - ${end}`;
+      }
+
+      if (!shiftMap[name]) shiftMap[name] = {};
+      shiftMap[name][dateStr] = shiftLabel;
+    });
+
+    const sortedDates = Array.from(allDates).sort((a, b) => {
+      const [da, ma] = a.split('-');
+      const [db, mb] = b.split('-');
+      const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+      return new Date(2024, months.indexOf(ma), parseInt(da)) - new Date(2024, months.indexOf(mb), parseInt(db));
+    });
+
+    const roleOrder = ["NUM", "ANUM", "CNS", "RN", "EN", "GNP", "HAst"];
+    const sortedNames = Object.keys(shiftMap).sort((a, b) => {
+      const roleA = (employeeRoles[a] || "").toUpperCase();
+      const roleB = (employeeRoles[b] || "").toUpperCase();
+      const indexA = roleOrder.indexOf(roleA);
+      const indexB = roleOrder.indexOf(roleB);
+      return (indexA === -1 ? 999 : indexA) - (indexB === -1 ? 999 : indexB);
+    });
+
+    const table = document.createElement('table');
+    const thead = document.createElement('thead');
+    const headerRow = document.createElement('tr');
+    headerRow.innerHTML = `<th>Employee</th><th>Role</th>`;
+    sortedDates.forEach(date => {
+      headerRow.innerHTML += `<th>${date}</th>`;
+    });
+    thead.appendChild(headerRow);
+    table.appendChild(thead);
+
+    const tbody = document.createElement('tbody');
+    sortedNames.forEach(name => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${name}</td><td>${employeeRoles[name]}</td>`;
+      sortedDates.forEach(date => {
+        const shift = shiftMap[name][date] || '';
+        const td = document.createElement('td');
+        td.textContent = shift;
+
+        if (shift === "07:00 - 15:30") td.style.backgroundColor = "#DDEEFF";
+        else if (shift === "13:30 - 22:00") td.style.backgroundColor = "#F3BBDC";
+        else if (shift === "21:30 - 07:30") td.style.backgroundColor = "#C6C1E1";
+
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+
+    table.appendChild(tbody);
+
+    const shiftCounts = { AM: {}, PM: {}, ND: {}, Leave: {} };
+    const rowsDOM = tbody.querySelectorAll('tr');
+
+    sortedDates.forEach((date, colIndex) => {
+      let am = 0, pm = 0, nd = 0, lv = 0;
+      rowsDOM.forEach(row => {
+        const cell = row.cells[colIndex + 2];
+        if (!cell) return;
+        const value = cell.textContent.trim().toLowerCase();
+        if (value === '07:00 - 15:30') am++;
+        else if (value === '13:30 - 22:00') pm++;
+        else if (value === '21:30 - 07:30') nd++;
+        else if (leaveKeywords.some(k => value.includes(k))) lv++;
+      });
+      shiftCounts.AM[date] = am;
+      shiftCounts.PM[date] = pm;
+      shiftCounts.ND[date] = nd;
+      shiftCounts.Leave[date] = lv;
+    });
+
+    const tfoot = document.createElement('tfoot');
+    ['AM Shift', 'PM Shift', 'ND Shift', 'Leave Count'].forEach(label => {
+      const tr = document.createElement('tr');
+      const td1 = document.createElement('td');
+      td1.colSpan = 2;
+      td1.textContent = label;
+      tr.appendChild(td1);
+
+      sortedDates.forEach(date => {
+        const td = document.createElement('td');
+        const val = shiftCounts[label.includes('AM') ? 'AM' :
+                               label.includes('PM') ? 'PM' :
+                               label.includes('ND') ? 'ND' : 'Leave'][date] || 0;
+        td.textContent = val;
+
+        if (label === 'AM Shift' || label === 'PM Shift') {
+          td.style.backgroundColor = val > 5 ? '#FFFF66' :
+                                     val === 5 ? '#8FFF94' : '#FF8F8F';
+        } else if (label === 'ND Shift') {
+          td.style.backgroundColor = val >= 3 ? '#8FFF94' : '#FF8181';
+        } else if (label === 'Leave Count') {
+          td.style.backgroundColor = '#DDEEFF';
+        }
+
+        tr.appendChild(td);
+      });
+
+      tfoot.appendChild(tr);
+    });
+
+    table.appendChild(tfoot);
+    document.getElementById('output').innerHTML = '';
+    document.getElementById('output').appendChild(table);
+  };
+
+  reader.readAsArrayBuffer(file);
+}
+</script>
+
+</body>
+</html>
